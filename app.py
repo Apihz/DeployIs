@@ -383,6 +383,7 @@ def main():
             - ✅ Safari (macOS/iOS)
             - ⚠️ Edge (may have issues)
             """)
+            
 
 if __name__ == "__main__":
     main()
