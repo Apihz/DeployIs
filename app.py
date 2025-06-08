@@ -13,7 +13,7 @@ import av
 from typing import Optional, Tuple, List, Dict, Any
 
 # Page config
-st.set_page_config(page_title="📸 Real-time Student Attention Detection", layout="wide", page_icon="📸")
+st.set_page_config(page_title="Real-time Student Attention Detection", layout="wide", page_icon="📸")
 
 # Classes for the model - make sure these match your model training
 classes = ['bored', 'confused', 'drowsy', 'engaged', 'frustrated', 'Looking away']
@@ -303,20 +303,22 @@ class CameraManager:
         self.cap = None
         self.is_active = False
     
-    def start(self, camera_index: int = 0) -> bool:
-        """Start camera capture"""
+    def start(self) -> bool:
+        """Start camera capture, automatically detect available camera"""
         try:
-            self.cap = cv2.VideoCapture(camera_index)
-            if not self.cap.isOpened():
-                return False
+            # Try opening the first available camera index
+            for camera_index in range(10):  # Check up to 10 camera indexes
+                self.cap = cv2.VideoCapture(camera_index)
+                if self.cap.isOpened():
+                    # Set camera properties for better performance
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    self.cap.set(cv2.CAP_PROP_FPS, 60)
+                    self.is_active = True
+                    return True
             
-            # Set camera properties for better performance
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            
-            self.is_active = True
-            return True
+            # If no camera found
+            return False
             
         except Exception:
             return False
@@ -334,6 +336,7 @@ class CameraManager:
         if self.cap:
             self.cap.release()
             self.cap = None
+      
 def display_analysis_results(results: List[Dict[str, Any]]):
     """Display analysis results in a formatted way"""
     
