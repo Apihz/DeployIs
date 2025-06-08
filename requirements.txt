@@ -6,7 +6,7 @@ streamlit-webrtc
 streamlit>=1.28.0
 streamlit-webrtc>=0.47.0
 opencv-python-headless>=4.8.0
-torch==2.0.1+cu118  # CUDA 11.8, should work with most systems with GPU support
+torch==2.7.1 # CUDA 11.8, should work with most systems with GPU support
 torchvision>=0.15.0
 Pillow>=9.5.0
 numpy>=1.24.0
