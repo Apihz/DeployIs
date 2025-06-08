@@ -1,5 +1,5 @@
 streamlit
-torch
+torch==1.13.1+cu116 
 torchvision
 opencv-python-headless
 streamlit-webrtc
