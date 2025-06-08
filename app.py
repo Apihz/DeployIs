@@ -2,24 +2,26 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from torchvision import transforms, datasets
-from PIL import Image
+from torchvision import transforms
 import cv2
-import io
-import zipfile
-import av
-from torch.utils.data import DataLoader
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 import numpy as np
+from PIL import Image
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+import asyncio
+import av
 
-# Page config must be the first Streamlit command
+# Page config
 st.set_page_config(page_title="📸 Real-time Student Attention Detection", layout="wide", page_icon="📸")
 
 # Classes for the model - make sure these match your model training
 classes = ['bored', 'confused', 'drowsy', 'engaged', 'frustrated', 'Looking away']
 
-# Device
+# Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Ensure asyncio event loop is initialized
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 # Load model with better error handling
 @st.cache_resource
@@ -178,7 +180,7 @@ def main():
         st.header("ℹ️ Information")
         st.write("This app detects student attention states in real-time using your webcam.")
         
-        st.subheader("Detected States:")
+        st.subheader("Detected States: ")
         state_colors = {
             'engaged': '🟢',
             'bored': '🔴',
@@ -210,7 +212,6 @@ def main():
         st.subheader("📹 Live Camera Feed" if input_method == "Webcam" else "📂 Upload Image")
         
         if input_method == "Webcam":
-            # Webcam option
             if model is None:
                 st.error("⚠️ Model not loaded! Please ensure 'attention_resnet18.pth' is in the app directory.")
             elif face_cascade is None:
@@ -218,7 +219,6 @@ def main():
             else:
                 st.success("✅ System ready for attention detection!")
             
-            # WebRTC streamer with STUN/TURN configuration for deployment
             RTC_CONFIGURATION = {
                 "iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]},
@@ -245,19 +245,12 @@ def main():
                 async_processing=True,
             )
         else:
-            # Upload option
             uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
             if uploaded_file is not None:
-                # Process uploaded image here
                 image = Image.open(uploaded_file)
-                
-                # Convert the PIL image to numpy array before passing to the transform function
                 image_np = np.array(image)
-
-                # Preprocess the image (same transformation as for webcam)
                 input_image = webcam_transform(image_np).unsqueeze(0).to(device)
                 
-                # Make prediction on the uploaded image
                 with torch.no_grad():
                     output = model(input_image)
                     _, predicted = torch.max(output, 1)
@@ -265,21 +258,15 @@ def main():
                     pred_idx = predicted.item()
                     confidence = probs[pred_idx].item()
                 
-                # Get the predicted attention state
                 attention_state = classes[pred_idx]
                 
-                # Create spacing
                 st.markdown("---")
-                
-                # Main layout with columns
                 img_col, result_col = st.columns([1.2, 1])
-                
                 with img_col:
                     st.subheader("📸 Analyzed Image")
                     st.image(image, use_container_width=True)
                 
                 with result_col:
-                    # Attention state configuration
                     state_config = {
                         'engaged': {'emoji': '🎯', 'color': 'green', 'status': 'success'},
                         'bored': {'emoji': '😴', 'color': 'red', 'status': 'error'},
@@ -291,23 +278,14 @@ def main():
                     
                     config = state_config.get(attention_state, {'emoji': '🧠', 'color': 'blue', 'status': 'info'})
                     
-                    # Main result display
                     st.subheader("🎯 Detection Result")
-                    
-                    # Large emoji and state
                     st.markdown(f"<div style='text-align: center; font-size: 4rem;'>{config['emoji']}</div>", 
                                unsafe_allow_html=True)
-                    
-                    # State name in large text
                     st.markdown(f"<h1 style='text-align: center; color: {config['color']};'>{attention_state.upper()}</h1>", 
                                unsafe_allow_html=True)
-                    
-                    # Confidence as a progress bar
                     st.subheader("📊 Confidence Level")
                     st.progress(confidence)
                     st.metric("Confidence Score", f"{confidence:.1%}")
-                    
-                    # Status message using Streamlit's alert components
                     if config['status'] == 'success':
                         st.success(f"✅ Student is {attention_state.lower()} - Great focus!")
                     elif config['status'] == 'error':
@@ -317,62 +295,8 @@ def main():
                     else:
                         st.info(f"ℹ️ Student is {attention_state.lower()}")
                 
-                # Additional analysis section
-                st.markdown("---")
-                
-                # Three columns for detailed breakdown
-                conf_col, state_col, advice_col = st.columns(3)
-                
-                with conf_col:
-                    st.subheader("🎯 Accuracy")
-                    if confidence >= 0.8:
-                        st.success("Very High")
-                        st.write("🟢 Highly reliable")
-                    elif confidence >= 0.6:
-                        st.success("High") 
-                        st.write("🟡 Reliable")
-                    elif confidence >= 0.4:
-                        st.warning("Moderate")
-                        st.write("🟠 Somewhat reliable")
-                    else:
-                        st.error("Low")
-                        st.write("🔴 Less reliable")
-                
-                with state_col:
-                    st.subheader("📋 Analysis")
-                    
-                    # Description based on attention state
-                    descriptions = {
-                        'engaged': "Student is actively focused and participating",
-                        'bored': "Student may be losing interest in the material",
-                        'confused': "Student might need clarification or help",
-                        'drowsy': "Student appears tired and may need a break",
-                        'frustrated': "Student may be struggling with the content",
-                        'Looking away': "Student's attention is directed elsewhere"
-                    }
-                    
-                    st.write(descriptions.get(attention_state, "Attention state detected"))
-                
-                with advice_col:
-                    st.subheader("💡 Suggestion")
-                    
-                    # Recommendations based on state
-                    recommendations = {
-                        'engaged': "Continue with current approach",
-                        'bored': "Try interactive activities or change pace",
-                        'confused': "Pause and provide additional explanation",
-                        'drowsy': "Consider a short break or energizing activity",
-                        'frustrated': "Offer individual support or simplify concept",
-                        'Looking away': "Redirect attention with engaging content"
-                    }
-                    
-                    st.write(recommendations.get(attention_state, "Monitor student engagement"))
-                
-                # Summary card
                 st.markdown("---")
                 st.subheader("📈 Summary Report")
-                
-                # Use columns for a clean summary layout
                 summary_col1, summary_col2 = st.columns(2)
                 
                 with summary_col1:
@@ -380,7 +304,6 @@ def main():
                     st.metric("Confidence", f"{confidence:.1%}")
                 
                 with summary_col2:
-                    # Overall assessment
                     if attention_state == 'engaged':
                         overall = "POSITIVE"
                         st.success(f"Overall Assessment: {overall}")
@@ -391,13 +314,11 @@ def main():
                         overall = "NEUTRAL"
                         st.warning(f"Overall Assessment: {overall}")
                     
-                    # AI confidence level
                     if confidence >= 0.7:
                         st.info("🤖 AI is confident in this prediction")
                     else:
                         st.info("🤖 AI has moderate confidence in this prediction")
                 
-                # Expandable detailed analysis
                 with st.expander("🔍 Detailed Analysis"):
                     st.write("**Model Information:**")
                     st.write(f"- Architecture: ResNet-18")
@@ -406,12 +327,12 @@ def main():
                     st.write(f"- Classes Detected: {len(classes)}")
                     
                     st.write("**Probability Distribution:**")
-                    # Show all class probabilities
                     probs_all = torch.nn.functional.softmax(output[0], dim=0)
                     for i, class_name in enumerate(classes):
                         prob = probs_all[i].item()
                         st.write(f"- {class_name}: {prob:.2%}")
                         st.progress(prob)
+    
     with col2:
         st.subheader("📊 Detection Tips")
         
@@ -424,9 +345,8 @@ def main():
         - 😴 Detection works best with clear facial expressions
         """)
         
-        # Instructions
         st.subheader("📋 Instructions")
-        st.write("""
+        st.write(""" 
         1. Click **START** to begin camera feed
         2. Allow camera permissions when prompted
         3. Wait for connection (may take 10-30 seconds)
@@ -435,16 +355,14 @@ def main():
         6. Click **STOP** to end session
         """)
         
-        # Model info
         if model is not None:
             st.subheader("🧠 Model Info")
             st.write(f"Classes: {len(classes)}")
             st.write("Architecture: ResNet-18")
             st.write("Input size: 224x224")
         
-        # Troubleshooting section
         with st.expander("🔧 Troubleshooting"):
-            st.write("""
+            st.write(""" 
             **If detection isn't working:**
             - Make sure your face is clearly visible
             - Check lighting conditions
