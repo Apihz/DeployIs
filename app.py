@@ -365,9 +365,9 @@ def display_analysis_results(results: List[Dict[str, Any]]):
             if state == 'engaged':
                 st.success("✅ Focused")
             elif state in ['bored', 'drowsy', 'Looking away']:
-                st.error("⚠️ Attention needed")
+                st.error("Please lock in bro 🙏🥀🥀")
             else:
-                st.warning("⚡ Check in")
+                st.warning("⚠️ Need focus more")
 
     # Display info messages
     for msg in info_messages:
@@ -418,7 +418,7 @@ def main():
         tab1, tab2 = st.tabs(["📹 Live Camera", "📁 Upload Image"])
 
         with tab1:
-                st.subheader("📹 Live Camera Feed")        
+                st.subheader("Live Camera Feed")        
                 if model is None:
                     st.error("Model not loaded! Please ensure 'attention_resnet18.pth' is in the app directory.")
                 elif face_cascade is None:
@@ -500,7 +500,7 @@ def main():
                 if 'captured_frame' in st.session_state:
                     
                     # Process the frame
-                    with st.spinner("🔍 Analyzing attention states..."):
+                    with st.spinner("Analyzing attention states..."):
                         processed_frame, analysis_results = detect_and_analyze_faces(
                             st.session_state.captured_frame
                         )
@@ -519,7 +519,7 @@ def main():
                         display_analysis_results(analysis_results)
                 
                 else:
-                    st.info("📋 Click 'Start Camera' then 'Capture & Analyze' to begin analysis")
+                    st.info("Click 'Start Camera' then 'Capture & Analyze' to begin analysis")
     
         
         with tab2:
@@ -630,7 +630,7 @@ def main():
             st.write("Architecture: ResNet-18")
             st.write("Input size: 224x224")
         
-        with st.expander("🔧 Troubleshooting"):
+        with st.expander("Troubleshooting"):
             st.write(""" 
             **If detection isn't working:**
             - Make sure your face is clearly visible
