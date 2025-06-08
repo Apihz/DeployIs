@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -9,6 +10,7 @@ from PIL import Image
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 import asyncio
 import av
+from typing import Optional, Tuple, List, Dict, Any
 
 # Page config
 st.set_page_config(page_title="📸 Real-time Student Attention Detection", layout="wide", page_icon="📸")
@@ -18,8 +20,6 @@ classes = ['bored', 'confused', 'drowsy', 'engaged', 'frustrated', 'Looking away
 
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 
 # Load model with better error handling
 @st.cache_resource
@@ -73,6 +73,7 @@ webcam_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize([0.5]*3, [0.5]*3)  # Using the same normalization as your notebook
 ])
+transform = webcam_transform
 
 # Video Transformer for real-time prediction
 class AttentionTransformer(VideoTransformerBase):
@@ -164,18 +165,225 @@ class AttentionTransformer(VideoTransformerBase):
             cv2.putText(img, f"Error: {str(e)[:40]}", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
+        
+def predict_attention_state(image: np.ndarray) -> Tuple[Optional[str], float]:
+    """
+    Predict attention state from face image
+    
+    Args:
+        image: Face image as numpy array (RGB format)
+    
+    Returns:
+        Tuple of (predicted_class, confidence_score)
+    """
+    if model is None:
+        return None, 0.0
+    
+    try:
+        # Preprocess image
+        input_tensor = transform(image).unsqueeze(0).to(device)
+        
+        # Make prediction
+        with torch.no_grad():
+            output = model(input_tensor)
+            probabilities = torch.nn.functional.softmax(output[0], dim=0)
+            predicted_class_idx = torch.argmax(probabilities).item()
+            confidence = probabilities[predicted_class_idx].item()
+        
+        return classes[predicted_class_idx], confidence
+        
+    except Exception as e:
+        st.error(f"Prediction error: {str(e)}")
+        return None, 0.0
+
+def detect_and_analyze_faces(image: np.ndarray) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    """
+    Detect faces in image and analyze attention state
+    
+    Args:
+        image: Input image as numpy array (BGR format)
+    
+    Returns:
+        Tuple of (processed_image, analysis_results)
+    """
+    if face_cascade is None:
+        return image, [{"error": "Face detector not available"}]
+    
+    # Convert to grayscale for face detection
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Detect faces
+    faces = face_cascade.detectMultiScale(
+        gray, 
+        scaleFactor=1.1, 
+        minNeighbors=5, 
+        minSize=(50, 50),
+        flags=cv2.CASCADE_SCALE_IMAGE
+    )
+    
+    results = []
+    processed_image = image.copy()
+    
+    if len(faces) == 0:
+        results.append({
+            "message": "No faces detected",
+            "type": "info",
+            "color": (255, 165, 0)  # Orange
+        })
+        return processed_image, results
+    
+    # Process each detected face
+    for i, (x, y, w, h) in enumerate(faces):
+        try:
+            # Extract face region
+            face_region = image[y:y+h, x:x+w]
+            
+            # Skip very small faces
+            if face_region.shape[0] < 50 or face_region.shape[1] < 50:
+                continue
+            
+            # Convert BGR to RGB for model
+            face_rgb = cv2.cvtColor(face_region, cv2.COLOR_BGR2RGB)
+            
+            # Predict attention state
+            attention_state, confidence = predict_attention_state(face_rgb)
+            
+            if attention_state:
+                # Define colors for different states
+                color_map = {
+                    'engaged': (0, 255, 0),      # Green
+                    'bored': (0, 0, 255),        # Red
+                    'drowsy': (0, 0, 255),       # Red
+                    'Looking away': (0, 0, 255), # Red
+                    'confused': (0, 165, 255),   # Orange
+                    'frustrated': (0, 165, 255)  # Orange
+                }
+                
+                color = color_map.get(attention_state, (255, 255, 0))  # Default: Yellow
+                
+                # Draw face rectangle
+                cv2.rectangle(processed_image, (x, y), (x+w, y+h), color, 3)
+                
+                # Add label
+                label = f"{attention_state}: {confidence:.1%}"
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                
+                # Background for text
+                cv2.rectangle(processed_image, (x, y-35), (x + label_size[0] + 10, y), color, -1)
+                cv2.putText(processed_image, label, (x + 5, y - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Confidence bar
+                bar_width = int(w * confidence)
+                cv2.rectangle(processed_image, (x, y + h + 5), (x + bar_width, y + h + 15), color, -1)
+                cv2.rectangle(processed_image, (x, y + h + 5), (x + w, y + h + 15), (255, 255, 255), 2)
+                
+                results.append({
+                    "face_id": i + 1,
+                    "attention_state": attention_state,
+                    "confidence": confidence,
+                    "bbox": (x, y, w, h),
+                    "color": color,
+                    "type": "prediction"
+                })
+            
+        except Exception as e:
+            results.append({
+                "face_id": i + 1,
+                "error": f"Analysis failed: {str(e)}",
+                "type": "error"
+            })
+    
+    return processed_image, results
+
+class CameraManager:
+    """Simple camera management class"""
+    
+    def __init__(self):
+        self.cap = None
+        self.is_active = False
+    
+    def start(self, camera_index: int = 0) -> bool:
+        """Start camera capture"""
+        try:
+            self.cap = cv2.VideoCapture(camera_index)
+            if not self.cap.isOpened():
+                return False
+            
+            # Set camera properties for better performance
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            
+            self.is_active = True
+            return True
+            
+        except Exception:
+            return False
+    
+    def capture_frame(self) -> Optional[np.ndarray]:
+        """Capture a single frame"""
+        if self.cap and self.is_active:
+            ret, frame = self.cap.read()
+            return frame if ret else None
+        return None
+    
+    def stop(self):
+        """Stop camera and release resources"""
+        self.is_active = False
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+def display_analysis_results(results: List[Dict[str, Any]]):
+    """Display analysis results in a formatted way"""
+    
+    if not results:
+        st.warning("No analysis results available")
+        return
+    
+    predictions = [r for r in results if r.get("type") == "prediction"]
+    errors = [r for r in results if r.get("type") == "error"]
+    info_messages = [r for r in results if r.get("type") == "info"]
+    
+    # Display predictions
+    if predictions:
+        st.subheader("Attention Analysis Results")
+        
+        # Break the layout into a single column, avoiding nested columns
+        for result in predictions:
+            face_id = result["face_id"]
+            state = result["attention_state"]
+            confidence = result["confidence"]
+            
+            # Display the results using different Streamlit components
+            st.metric(f"Face {face_id}", state.title())
+            
+            # Progress bar for confidence
+            st.progress(confidence, text=f"Confidence: {confidence:.1%}")
+            
+            # Status indicator based on attention state
+            if state == 'engaged':
+                st.success("✅ Focused")
+            elif state in ['bored', 'drowsy', 'Looking away']:
+                st.error("⚠️ Attention needed")
+            else:
+                st.warning("⚡ Check in")
+
+    # Display info messages
+    for msg in info_messages:
+        st.info(msg["message"])
+    
+    # Display errors
+    for error in errors:
+        st.error(f"Face {error['face_id']}: {error['error']}")
 
 # Main function
 def main():
-    st.title("📸 Real-time Student Attention Detection")
+    st.title("Real-time Student Attention Detection")
     st.markdown("---")
-    
-    # Sidebar for selecting input method
-    input_method = st.sidebar.radio("Select Input Method", ("Webcam", "Upload File"))
-    
-    # Sidebar with information
+    # Sidebar content
     with st.sidebar:
-        st.header("ℹ️ Information")
+        st.header("Information")
         st.write("This app detects student attention states in real-time using your webcam.")
         
         st.subheader("Detected States: ")
@@ -199,50 +407,122 @@ def main():
         st.write("- Model file: **attention_resnet18.pth**")
         
         st.subheader("System Status:")
-        st.write(f"🔧 Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
-        st.write(f"🤖 Model: {'✅ Loaded' if model is not None else '❌ Not Loaded'}")
-        st.write(f"👤 Face Detection: {'✅ Ready' if face_cascade is not None else '❌ Failed'}")
-    
-    # Main content
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("📹 Live Camera Feed" if input_method == "Webcam" else "📂 Upload Image")
-        
-        if input_method == "Webcam":
-            if model is None:
-                st.error("⚠️ Model not loaded! Please ensure 'attention_resnet18.pth' is in the app directory.")
-            elif face_cascade is None:
-                st.error("⚠️ Face detection not available!")
-            else:
-                st.success("✅ System ready for attention detection!")
-            
-            RTC_CONFIGURATION = {
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {"urls": ["stun:stun1.l.google.com:19302"]},
-                    {"urls": ["stun:stun2.l.google.com:19302"]},
-                    {"urls": ["stun:stun3.l.google.com:19302"]},
-                    {"urls": ["stun:stun4.l.google.com:19302"]},
-                ]
-            }
+        st.write(f"Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
+        st.write(f"Model: {'Loaded' if model is not None else 'Not Loaded'}")
+        st.write(f"Face Detection: {'Ready' if face_cascade is not None else 'Failed'}")
 
-            ctx = webrtc_streamer(
-                key="attention-detection",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=RTC_CONFIGURATION,
-                video_processor_factory=AttentionTransformer,
-                media_stream_constraints={
-                    "video": {
-                        "width": {"min": 480, "ideal": 640, "max": 1280},
-                        "height": {"min": 360, "ideal": 480, "max": 720},
-                        "frameRate": {"min": 30, "ideal": 30, "max": 60}
+    # Create layout with two columns
+    colx1, colx2 = st.columns([4, 1])
+
+    with colx1:
+        tab1, tab2 = st.tabs(["📹 Live Camera", "📁 Upload Image"])
+
+        with tab1:
+                st.subheader("📹 Live Camera Feed")        
+                if model is None:
+                    st.error("Model not loaded! Please ensure 'attention_resnet18.pth' is in the app directory.")
+                elif face_cascade is None:
+                    st.error("Face detection not available!")
+                else:
+                    st.success("System ready for attention detection!")
+                
+                RTC_CONFIGURATION = {
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun1.l.google.com:19302"]},
+                        {"urls": ["stun:stun2.l.google.com:19302"]},
+                        {"urls": ["stun:stun3.l.google.com:19302"]},
+                        {"urls": ["stun:stun4.l.google.com:19302"]},
+                    ]
+                }
+
+                ctx = webrtc_streamer(
+                    key="attention-detection",
+                    mode=WebRtcMode.SENDRECV,
+                    rtc_configuration=RTC_CONFIGURATION,
+                    video_processor_factory=AttentionTransformer,
+                    media_stream_constraints={
+                        "video": {
+                            "width": {"min": 480, "ideal": 640, "max": 1280},
+                            "height": {"min": 360, "ideal": 480, "max": 720},
+                            "frameRate": {"min": 30, "ideal": 30, "max": 60}
+                        },
+                        "audio": False
                     },
-                    "audio": False
-                },
-                async_processing=True,
-            )
-        else:
+                    async_processing=True,
+                )
+
+
+                st.markdown("---")
+                st.subheader("Frame capture")        
+
+
+                        # Check system readiness
+                if model is None or face_cascade is None:
+                    st.error("System not ready. Please check model and face detection status in sidebar.")
+                    return
+                
+                # Initialize camera manager in session state
+                if 'camera_manager' not in st.session_state:
+                    st.session_state.camera_manager = CameraManager()
+
+                col1, col2, col3 = st.columns(3)
+        
+                with col1:
+                    if st.button("Start Camera", type="primary", use_container_width=True):
+                        if st.session_state.camera_manager.start():
+                            st.success("Camera started!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to start camera")
+                
+                with col2:
+                    if st.button("Capture & Analyze", use_container_width=True):
+                        frame = st.session_state.camera_manager.capture_frame()
+                        if frame is not None:
+                            st.session_state.captured_frame = frame
+                            st.session_state.frame_timestamp = time.time()
+                            st.success("Frame captured!")
+                            st.rerun()
+                        else:
+                            st.error("No frame available")
+                
+                with col3:
+                    if st.button("Stop Camera", use_container_width=True):
+                        st.session_state.camera_manager.stop()
+                        st.success("Camera stopped!")
+                        if 'captured_frame' in st.session_state:
+                            del st.session_state.captured_frame
+                        st.rerun()
+                
+                
+                # Display captured frame and analysis
+                if 'captured_frame' in st.session_state:
+                    
+                    # Process the frame
+                    with st.spinner("🔍 Analyzing attention states..."):
+                        processed_frame, analysis_results = detect_and_analyze_faces(
+                            st.session_state.captured_frame
+                        )
+                    
+                    # Display results
+                    col_img, col_results = st.columns([3, 2])
+                    
+                    with col_img:
+                        st.subheader("Analysis Result")
+                        # Convert BGR to RGB for display
+                        display_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                        st.image(display_frame, caption=f"Captured at {time.ctime(st.session_state.frame_timestamp)}", 
+                                use_container_width=True)
+                    
+                    with col_results:
+                        display_analysis_results(analysis_results)
+                
+                else:
+                    st.info("📋 Click 'Start Camera' then 'Capture & Analyze' to begin analysis")
+    
+        
+        with tab2:
             uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
             if uploaded_file is not None:
                 image = Image.open(uploaded_file)
@@ -275,26 +555,27 @@ def main():
                     }
                     
                     config = state_config.get(attention_state, {'emoji': '🧠', 'color': 'blue', 'status': 'info'})
-                    
-                    st.subheader("🎯 Detection Result")
+
+
+                    st.subheader("Detection Result")
                     st.markdown(f"<div style='text-align: center; font-size: 4rem;'>{config['emoji']}</div>", 
                                unsafe_allow_html=True)
                     st.markdown(f"<h1 style='text-align: center; color: {config['color']};'>{attention_state.upper()}</h1>", 
                                unsafe_allow_html=True)
-                    st.subheader("📊 Confidence Level")
+                    st.subheader("Confidence Level")
                     st.progress(confidence)
                     st.metric("Confidence Score", f"{confidence:.1%}")
                     if config['status'] == 'success':
-                        st.success(f"✅ Student is {attention_state.lower()} - Great focus!")
+                        st.success(f"Student is {attention_state.lower()} - Great focus!")
                     elif config['status'] == 'error':
-                        st.error(f"⚠️ Student appears {attention_state.lower()} - May need attention")
+                        st.error(f"Student appears {attention_state.lower()} - May need attention")
                     elif config['status'] == 'warning':
-                        st.warning(f"⚡ Student seems {attention_state.lower()} - Consider checking in")
+                        st.warning(f"Student seems {attention_state.lower()} - Consider checking in")
                     else:
-                        st.info(f"ℹ️ Student is {attention_state.lower()}")
+                        st.info(f"Student is {attention_state.lower()}")
                 
                 st.markdown("---")
-                st.subheader("📈 Summary Report")
+                st.subheader("Summary Report")
                 summary_col1, summary_col2 = st.columns(2)
                 
                 with summary_col1:
@@ -313,11 +594,11 @@ def main():
                         st.warning(f"Overall Assessment: {overall}")
                     
                     if confidence >= 0.7:
-                        st.info("🤖 AI is confident in this prediction")
+                        st.info("AI is confident in this prediction")
                     else:
-                        st.info("🤖 AI has moderate confidence in this prediction")
+                        st.info("AI has moderate confidence in this prediction")
                 
-                with st.expander("🔍 Detailed Analysis"):
+                with st.expander("Detailed Analysis"):
                     st.write("**Model Information:**")
                     st.write(f"- Architecture: ResNet-18")
                     st.write(f"- Input Resolution: 224x224")
@@ -330,31 +611,21 @@ def main():
                         prob = probs_all[i].item()
                         st.write(f"- {class_name}: {prob:.2%}")
                         st.progress(prob)
-    
-    with col2:
-        st.subheader("📊 Detection Tips")
+
+    with colx2:
+        st.subheader("Detection Tips")
         
         st.write(""" 
         **For better detection:**
-        - 💡 Ensure good lighting on your face
-        - 👤 Keep your face clearly visible
-        - 📏 Maintain proper distance from camera
-        - 🎯 Look directly at the camera for 'engaged'
-        - 😴 Detection works best with clear facial expressions
+        - Ensure good lighting on your face
+        - Keep your face clearly visible
+        - Maintain proper distance from camera
+        - Look directly at the camera for 'engaged'
+        - Detection works best with clear facial expressions
         """)
-        
-        st.subheader("📋 Instructions")
-        st.write(""" 
-        1. Click **START** to begin camera feed
-        2. Allow camera permissions when prompted
-        3. Wait for connection (may take 10-30 seconds)
-        4. Position yourself in the camera view
-        5. Watch real-time attention detection
-        6. Click **STOP** to end session
-        """)
-        
+       
         if model is not None:
-            st.subheader("🧠 Model Info")
+            st.subheader("Model Info")
             st.write(f"Classes: {len(classes)}")
             st.write("Architecture: ResNet-18")
             st.write("Input size: 224x224")
@@ -376,10 +647,10 @@ def main():
             - Wait up to 30 seconds for connection
             
             **Supported browsers:**
-            - ✅ Chrome/Chromium
-            - ✅ Firefox
-            - ✅ Safari (macOS/iOS)
-            - ⚠️ Edge (may have issues)
+            - Chrome/Chromium
+            - Firefox
+            - Safari (macOS/iOS)
+            - Edge (may have issues)
             """)
             
 
