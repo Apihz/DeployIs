@@ -19,9 +19,7 @@ classes = ['bored', 'confused', 'drowsy', 'engaged', 'frustrated', 'Looking away
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Ensure asyncio event loop is initialized
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+
 
 # Load model with better error handling
 @st.cache_resource
